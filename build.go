@@ -3,14 +3,16 @@ package sti
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"github.com/fsouza/go-dockerclient"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
-
-	"github.com/fsouza/go-dockerclient"
 )
 
 type BuildRequest struct {
@@ -21,6 +23,7 @@ type BuildRequest struct {
 	Environment map[string]string
 	Method      string
 	Writer      io.Writer
+	CallbackUrl string
 }
 
 type BuildResult STIResult
@@ -87,7 +90,40 @@ func Build(req BuildRequest) (*BuildResult, error) {
 		result, err = h.extendedBuild(req, incremental)
 	}
 
+	if req.CallbackUrl != "" {
+		executeCallback(req.CallbackUrl, result)
+	}
+
 	return result, err
+}
+
+func executeCallback(callbackUrl string, result *BuildResult) {
+
+	buf := new(bytes.Buffer)
+	writer := bufio.NewWriter(buf)
+	for _, message := range result.Messages {
+		fmt.Fprint(writer, message)
+	}
+	writer.Flush()
+	d := map[string]string{"payload": buf.String()}
+
+	jsonBuffer := new(bytes.Buffer)
+	writer = bufio.NewWriter(jsonBuffer)
+	jsonWriter := json.NewEncoder(writer)
+	jsonWriter.Encode(d)
+	writer.Flush()
+
+	resp, err := http.Post(callbackUrl, "application/json", jsonBuffer)
+
+	if err != nil {
+		log.Printf("Execute callback error: %s", err)
+	}
+
+	if resp != nil {
+		if resp.StatusCode >= 400 {
+			log.Printf("execute callback failed at remote end-point")
+		}
+	}
 }
 
 // Script used to initialize permissions on bind-mounts when a non-root user is specified by an image
